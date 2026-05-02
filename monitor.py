@@ -1,7 +1,8 @@
 import json
 import os
 import requests
-from playwright.sync_api import sync_playwright
+from bs4 import BeautifulSoup
+from curl_cffi.requests import Session
 
 # ─── CONFIG (GitHub Secrets) ──────────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -28,47 +29,27 @@ def save_seen(ids):
 
 def fetch_listings():
     cars, seen_ids = [], set()
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-            locale="en-SG",
-            timezone_id="Asia/Singapore",
-        )
-        page = context.new_page()
 
-        # visit homepage first to get cookies
-        page.goto("https://www.sgcarmart.com", wait_until="domcontentloaded", timeout=30000)
-        page.wait_for_timeout(2000)
+    # curl_cffi impersonates Chrome's TLS fingerprint — bypasses Cloudflare
+    with Session(impersonate="chrome124") as s:
+        s.get("https://www.sgcarmart.com", timeout=30)  # warm up / get cookies
+        resp = s.get(VENDOR_URL, timeout=30)
+        resp.raise_for_status()
 
-        # now visit the vendor listing
-        page.goto(VENDOR_URL, wait_until="domcontentloaded", timeout=30000)
-        page.wait_for_timeout(3000)
+    print(f"Page status: {resp.status_code}, size: {len(resp.text)} chars")
 
-        # debug: print page title and a snippet of HTML
-        print(f"Page title: {page.title()}")
-        html = page.content()
-        print(f"HTML snippet:\n{html[:3000]}")
-
-        # extract all car links
-        anchors = page.query_selector_all("a[href*='/used-cars/info.php?ID=']")
-        for a in anchors:
-            href   = a.get_attribute("href") or ""
-            title  = (a.inner_text() or "").strip()
-            car_id = href.split("ID=")[-1].split("&")[0]
-            if car_id and title and car_id not in seen_ids:
-                seen_ids.add(car_id)
-                cars.append({
-                    "id":    car_id,
-                    "title": title,
-                    "url":   f"https://www.sgcarmart.com{href}" if href.startswith("/") else href,
-                })
-
-        browser.close()
+    soup = BeautifulSoup(resp.text, "html.parser")
+    for a in soup.select("a[href*='/used-cars/info.php?ID=']"):
+        href   = a["href"]
+        car_id = href.split("ID=")[-1].split("&")[0]
+        title  = a.get_text(strip=True)
+        if car_id and title and car_id not in seen_ids:
+            seen_ids.add(car_id)
+            cars.append({
+                "id":    car_id,
+                "title": title,
+                "url":   f"https://www.sgcarmart.com{href}" if href.startswith("/") else href,
+            })
     return cars
 
 def send_telegram(message):
@@ -83,7 +64,7 @@ def send_telegram(message):
     r.raise_for_status()
 
 def main():
-    print("Fetching listings with Playwright...")
+    print("Fetching listings...")
     listings = fetch_listings()
     print(f"Found {len(listings)} listings on page.")
 
