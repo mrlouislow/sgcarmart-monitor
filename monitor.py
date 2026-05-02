@@ -49,6 +49,11 @@ def fetch_listings():
         page.goto(VENDOR_URL, wait_until="domcontentloaded", timeout=30000)
         page.wait_for_timeout(3000)
 
+        # debug: print page title and a snippet of HTML
+        print(f"Page title: {page.title()}")
+        html = page.content()
+        print(f"HTML snippet:\n{html[:3000]}")
+
         # extract all car links
         anchors = page.query_selector_all("a[href*='/used-cars/info.php?ID=']")
         for a in anchors:
@@ -73,6 +78,8 @@ def send_telegram(message):
         "text":       message,
         "parse_mode": "HTML",
     }, timeout=10)
+    if not r.ok:
+        print(f"Telegram error {r.status_code}: {r.text}")
     r.raise_for_status()
 
 def main():
