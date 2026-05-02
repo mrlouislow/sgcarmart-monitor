@@ -1,34 +1,16 @@
-import requests
-from bs4 import BeautifulSoup
 import json
 import os
+import requests
+from playwright.sync_api import sync_playwright
 
-# ─── CONFIG (set these as GitHub Secrets) ─────────────────────────────────────
+# ─── CONFIG (GitHub Secrets) ──────────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID   = os.environ["TELEGRAM_CHAT_ID"]
-GIST_TOKEN         = os.environ["GIST_TOKEN"]       # GitHub PAT with gist scope
-GIST_ID            = os.environ["GIST_ID"]           # created once, saved as secret
+GIST_TOKEN         = os.environ["GIST_TOKEN"]
+GIST_ID            = os.environ["GIST_ID"]
 VENDOR_URL         = "https://www.sgcarmart.com/used-cars/listing?dl=2984"
 GIST_FILENAME      = "seen_cars.json"
 # ──────────────────────────────────────────────────────────────────────────────
-
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-    "Accept-Language": "en-SG,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-    "Cache-Control": "max-age=0",
-}
 
 def load_seen():
     url = f"https://api.github.com/gists/{GIST_ID}"
@@ -45,25 +27,43 @@ def save_seen(ids):
     r.raise_for_status()
 
 def fetch_listings():
-    session = requests.Session()
-    # warm up the session with a visit to the homepage first
-    session.get("https://www.sgcarmart.com", headers=HEADERS, timeout=15)
-    resp = session.get(VENDOR_URL, headers={**HEADERS, "Referer": "https://www.sgcarmart.com/"}, timeout=15)
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "html.parser")
-
     cars, seen_ids = [], set()
-    for a in soup.select("a[href*='/used-cars/info.php?ID=']"):
-        href   = a["href"]
-        car_id = href.split("ID=")[-1].split("&")[0]
-        title  = a.get_text(strip=True)
-        if car_id and title and car_id not in seen_ids:
-            seen_ids.add(car_id)
-            cars.append({
-                "id":    car_id,
-                "title": title,
-                "url":   f"https://www.sgcarmart.com{href}" if href.startswith("/") else href,
-            })
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            locale="en-SG",
+            timezone_id="Asia/Singapore",
+        )
+        page = context.new_page()
+
+        # visit homepage first to get cookies
+        page.goto("https://www.sgcarmart.com", wait_until="domcontentloaded", timeout=30000)
+        page.wait_for_timeout(2000)
+
+        # now visit the vendor listing
+        page.goto(VENDOR_URL, wait_until="domcontentloaded", timeout=30000)
+        page.wait_for_timeout(3000)
+
+        # extract all car links
+        anchors = page.query_selector_all("a[href*='/used-cars/info.php?ID=']")
+        for a in anchors:
+            href   = a.get_attribute("href") or ""
+            title  = (a.inner_text() or "").strip()
+            car_id = href.split("ID=")[-1].split("&")[0]
+            if car_id and title and car_id not in seen_ids:
+                seen_ids.add(car_id)
+                cars.append({
+                    "id":    car_id,
+                    "title": title,
+                    "url":   f"https://www.sgcarmart.com{href}" if href.startswith("/") else href,
+                })
+
+        browser.close()
     return cars
 
 def send_telegram(message):
@@ -76,7 +76,7 @@ def send_telegram(message):
     r.raise_for_status()
 
 def main():
-    print("Fetching listings...")
+    print("Fetching listings with Playwright...")
     listings = fetch_listings()
     print(f"Found {len(listings)} listings on page.")
 
@@ -84,14 +84,12 @@ def main():
         seen_ids = load_seen()
         print(f"Loaded {len(seen_ids)} previously seen IDs from Gist.")
     except Exception as e:
-        # First run — Gist exists but may be empty
         print(f"Could not load seen IDs ({e}), treating as first run.")
         seen_ids = set()
 
     new_cars = [c for c in listings if c["id"] not in seen_ids]
 
     if not seen_ids:
-        # First run — seed silently, send confirmation
         print("First run: seeding baseline, no notifications sent.")
         save_seen({c["id"] for c in listings})
         send_telegram("✅ SGCarMart monitor is <b>live on GitHub Actions</b>!\nYou'll be notified when this vendor posts new cars.")
