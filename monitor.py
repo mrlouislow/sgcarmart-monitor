@@ -18,7 +18,16 @@ HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/124.0.0.0 Safari/537.36"
     ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
     "Accept-Language": "en-SG,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Cache-Control": "max-age=0",
 }
 
 def load_seen():
@@ -36,7 +45,10 @@ def save_seen(ids):
     r.raise_for_status()
 
 def fetch_listings():
-    resp = requests.get(VENDOR_URL, headers=HEADERS, timeout=15)
+    session = requests.Session()
+    # warm up the session with a visit to the homepage first
+    session.get("https://www.sgcarmart.com", headers=HEADERS, timeout=15)
+    resp = session.get(VENDOR_URL, headers={**HEADERS, "Referer": "https://www.sgcarmart.com/"}, timeout=15)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
 
